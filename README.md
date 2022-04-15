@@ -1,0 +1,122 @@
+# AWS Elastic Beanstalk - Deployment Focus (Rolling, Blue-Green)
+
+- Below notes are a combination of lab instructions, and my edits.
+- Source: https://cloudacademy.com/
+    - Run a Controlled Deploy With AWS Elastic Beanstalk
+    - Credit where credit is due :)
+
+# Overview:
+
+- Create a nodeJS application via Elastic Beanstalk
+- Three versions (V1,V2,V3)
+    - V1 to V2 will be rolling deployment (which has downtime)
+    - We will treat V2 as our blue environment/app
+    - Create V3 as a clone of V2; V3 is our "Green" environment/app
+    - Use a Blue-Green now, where we have duplicate environments with version differences of App
+    - Swap the CNAME to transition from Blue to Green
+        - This essential passes the URL to V3 (the same traffic pointed at V2 now points at V3)
+    - Optional Delete V2, or maintain if rollback needed
+
+## Creating an Elastic Beanstalk App & Environment 
+
+## Create initial EB App
+- Create Application
+- Application Name:  My App
+- Platform: Select Node.js
+- Source code origin:
+- Upload
+    - v1.zip
+
+## Configuration options
+- Custom configuration
+    - Configure rolling updates as deployment policy, with 30% batch size
+        - The batch size determines how many instances an update is rolled out to at a time. 30% would roll the update out to the entire fleet in four rounds having around a 30% reduction in available capacity.
+    - configure to use pre-existing VPC (not default)
+    - configure load balancing to use 2 private subnets (here us-west-2a, us-west-2b)
+    - configure EC2 subnet as private (here us-west-2a)
+        - The network settings make the load balancer publicly accessible and do not assign public IP addresses to the EC2 instances running the application code. This means that your application is only accessible from the internet via the load balancer. Because there is only one availability zone us-west-2a for the instances running the application, the application could not tolerate an availability zone outage. You may want to use multiple availability zones to follow best practices, but for the sake of this lab, one is acceptable.
+    - Instance security group
+        - Elastic Beanstalk will create new security groups automatically for both the instances and the load balancer allowing inbound traffic on port 80. Because of this, it is not a problem to leave the security group set to none.
+- Create app. 
+
+## Deploy App v2 with rolling update (1 instance)
+
+- Deploy a new version of the application using a rolling deployment strategy. This deployment strategy takes a portion of the instances serving traffic out of service to upgrade them to a new version. The instances are returned to serving and a portion of the remaining instances are taken out of service to be upgraded. This process repeats until all instances are serving the new version of the application.
+
+- Upload and Deploy
+    - v2.zip
+- The Deployment Preferences uses the rolling update configuration  set when creating the environment. 
+- Specifically, using the Rolling policy and 30% batch sizes. Since only 1 instance is serving the application traffic, the 30% batch size rounds up to the minimum batch size of 1 instance.
+- After clicking Deploy, Elastic Beanstalk will begin working on a mutable rolling deployment of the new application version. The following message is displayed while the deployment is in progress
+
+Key Notes Rolling Deployment:
+- No new instances are created. The new version is deployed in place on existing instances.
+The maximum available capacity for serving traffic is reduced as instances are taken out of service to be upgraded. This can result in service outages. For example, if only one instance is serving the application.
+When an upgrade is rolled through in more than 2 batches, there will be times when the old and new versions of the application can be accessed simultaneously by clients.
+
+# Preparing a Blue-Green Deploy
+- Blue-green deployments work by creating a separate environment to deploy the new version. The original environment, referred to as the blue environment, is left untouched while the new environment, referred to as the green environment, is spun up running the new version.
+- Once all of the instances in the green environment are serving the new version of the application, new incoming application traffic is sent to the green environment. No new traffic is sent to the blue environment from this point.
+
+### Cloning the rolling environment elastic beanstalk (from above)
+- Clone environment form, configure the following values leaving the default values when not specified, then click Clone:
+
+- New Environment (our new GREEN environment, since is clone of the original V2):
+    - Environment name: Myapp-env-1 (This is the default name. You shouldn't choose a name related to "green" because the green environment becomes the blue environment for the next blue-green deployment)
+    - Environment URL: Delete the text to have the URL autogenerated
+- In new environment
+- Upload and deploy
+- Version label: my app v3
+- Application use v3.zip
+
+### Note: 
+ - Warning: Because this is not a stateful app, you won't find the records you inserted before.
+
+# Performing a DNS Swap
+- We have prepared a green environment by cloning an existing Elastic Beanstalk environment and performing a rolling deployment of the new version of the application (V3). The original blue environment (V2) hasn't been modified and is still the active environment.
+- Note at this point we have 2 active Elastic Beanstalk environments
+    - V2 (our blue) which is receiving all traffic
+    - V3 (our green) which is our new app version
+
+- Blue-Green deployments rely on having entire systems or subsystems deployed all at once using a DNS or reverse proxy cutover.
+- The blue environment is using the original URL that is used by clients.
+
+### Swapping the DNS
+- Here we swap DNS entries for the two environments, so clients access v3 using the original and more valuable URL (currently used by V2). 
+- Elastic Beanstalk integrates with Route 53 to accomplish the DNS swap. Route 53 is the DNS management service in AWS.
+
+- click Actions, Swap Environment URLs
+- Choose the V2 environment to swap with
+
+- The V2 application will continue to run and be accessible to clients while the swap occurs. 
+- The swap usually completes in under ten seconds
+- You will see the Health status of Ok and the most recent event begins with **Completed swapping CNAMEs**
+- Open the URL for the MyApp-env-1 environment:
+- Notice the URL is the original URL beginning with MyApp-env. and not the one beginning with MyApp-env-1.
+
+### Potential browser caching effect
+- If the page still displays the Cool V2 header, it is because your browser has cached the DNS record that resolves the URL to the original environment's load balancer. Try refreshing the page after a minute until the new version is displayed, or use a different browser. 
+- Although there is no downtime with this deployment, the effects of DNS caching are an important consideration when deciding on a deployment strategy. 
+
+# Summary
+In this lab step, you performed a DNS swap to direct new application traffic to the environment running v3 of the application. This swap is simple to perform and fast. There is no downtime during the cutover since both environments are fully functioning during the process. All new traffic to the original Elastic Beanstalk Environment is now routed to the one running v3, as the v3 environment has taken over all the traffic via DNS.
+
+Some points to keep in mind with the blue-green deployment strategy:
+
+- The maximum number of instances during the deployment is twice the target number of instances. This is because you have two fully functioning environments, one running the old version and one running the new version.
+- The minimum number of instances serving the application is never below the target number of instances.
+- You can easily roll back to the old version because the blue environment is not modified during the deployment.
+- The old and new versions of the application are never served simultaneously to new clients.
+
+Elastic Beanstalk performs the cutover switching the blue and green environments at the DNS level in Route 53. Outside of Elastic Beanstalk, blue-green deployments can also perform a cutover at the load balancer level. This is the strategy used by Elastic Container Service (ECS). The issues of DNS caching are avoided because the address of the load balancer remains the same. However, the abrupt cutover doesn't allow connections to gracefully drain.
+
+# Cleaning Up Old Resources
+- Now that you have successfully tried two kinds of low-downtime cloud deployment techniques on Elastic Beanstalk, you might be concerned about the costs associated with these techniques. The deploys are inexpensive. Recall that the rolling deployment runs in place without creating any new instances so there is no additional cost. The blue-green deployment creates a second environment which potentially doubles the cost while both environments are active. To save costs, you should eventually terminate the environment that was swapped away from during the blue-green deployment. You may choose to wait some amount of time before terminating the environment because:
+- Clients may have cached DNS resolutions and still access the old environment for some time
+- If you have any doubt about the new issues arising in the new environment, you can quickly swap back to the blue environment to limit the impact
+
+### Terminating an environment
+- Actions > Terminate Environment
+
+# Resources
+- https://cloudacademy.com/ Lab
